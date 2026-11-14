@@ -846,6 +846,11 @@ List<Widget> _typingPage(BuildContext context, SettingsStore store) => [
           _toggle(store, 'auto_caps', 'Capitals at sentence starts'),
           _toggle(store, 'space_cursor', 'Slide the space bar to move the cursor', 'Sideways by characters; up or down by lines. Hold it first and it never types a space. Off: holding it opens the keyboard picker.'),
           _toggle(store, 'delete_swipe', 'Slide backspace to delete words', 'Slide left from backspace: each stretch takes a word.'),
+          if (!isIOS) ...[
+            _toggle(store, 'shift_case', 'Shift changes a word’s capitals', 'Select text, or put the cursor in a word, then tap shift: Title, then ALL CAPS, then lower.'),
+            _toggle(store, 'capital_i', 'Capital I', 'A lone i becomes I as you finish it, and i’m, i’ll, i’ve and i’d too, even with autocorrect off.'),
+            _toggle(store, 'punct_space', 'Space after punctuation', 'A space comes with , . ! ? ; and : after a word. Type a space or another mark next and it takes that space’s place.'),
+          ],
         ],
       ),
     ];

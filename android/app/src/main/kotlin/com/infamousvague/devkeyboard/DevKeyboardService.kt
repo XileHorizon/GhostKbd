@@ -514,6 +514,8 @@ class DevKeyboardService : InputMethodService(), KeyboardListener, Dictation.Lis
 
     override fun onStartInput(attribute: EditorInfo?, restarting: Boolean) {
         super.onStartInput(attribute, restarting)
+        cursorPlaced = false
+        punctSpaced = false
         // Another field starts with nothing known about it; the same field started again keeps what it has shown of
         // itself (whether its app reports the cursor, whether a reading of it was ever not as guessed).
         if (restarting) mirror.drop() else { mirror.newField(); plainReads = false }
@@ -637,6 +639,9 @@ class DevKeyboardService : InputMethodService(), KeyboardListener, Dictation.Lis
         // A tap in the text (not the keyboard's own doing) lets the row go back to that word's suggestions.
         // Nor is the word before read again behind the cursor (lookAgain) once the cursor has moved that way.
         if (editor.onSelection(newSelStart, newSelEnd)) { toolsHeld = false; behind = null }
+        // Not the echo of the keys' own typing: the person put the cursor here (a tap, a slide), and shift may recase
+        // the word there; the space a mark brought is no longer the keyboard's to take back.
+        if (android.os.SystemClock.uptimeMillis() - ownEditAt > OWN_EDIT_MS) { cursorPlaced = true; punctSpaced = false }
         selStart = newSelStart
         selEnd = newSelEnd
         // The space a row tap typed is the keyboard's to take back only while the cursor stays just after it.
@@ -852,7 +857,74 @@ class DevKeyboardService : InputMethodService(), KeyboardListener, Dictation.Lis
 
     // --- KeyboardListener -------------------------------------------------------------------------------------------
 
+    // --- TextPolish (Settings › Typing): shift recasing, Capital I, a space after punctuation -------------------------
+
+    /** The space a mark brought with it ([TextPolish.wantsSpace]), still just before the cursor: a space or another mark takes it back. */
+    private var punctSpaced = false
+
+    /** The cursor was put where it is by a tap in the text or a slide, not by typing: shift may recase the word there. */
+    private var cursorPlaced = false
+
+    /** When the keys last typed or deleted ([cursorPlaced] reads selection reports this close after as the keys' own). */
+    private var ownEditAt = 0L
+
+    private fun ownEdit() { ownEditAt = android.os.SystemClock.uptimeMillis(); cursorPlaced = false; punctSpaced = false }
+
+    override fun onShiftCase(): TextPolish.Case? {
+        if (!prefs.shiftCase || !fixableField()) return null
+        val ic = currentInputConnection ?: return null
+        val locale = language.spec.locale
+        val selected = ic.getSelectedText(0)?.toString()
+        if (!selected.isNullOrEmpty()) {
+            if (selected.length > SHIFT_CASE_MOST) return null
+            val (made, case) = TextPolish.nextCase(selected, locale) ?: return null
+            val start = minOf(selStart, selEnd)
+            editor.replaceSelection(Kind.CORRECTION) { made to 0 }
+            // Still selected, for the next tap.
+            if (start >= 0) ic.setSelection(start, start + made.length)
+            ownEdit()
+            return case
+        }
+        if (!cursorPlaced || selStart < 0) return null
+        val before = ic.getTextBeforeCursor(SHIFT_CASE_WORD, 0) ?: return null
+        val after = ic.getTextAfterCursor(SHIFT_CASE_WORD, 0) ?: ""
+        val (b, a) = TextPolish.wordAround(before, after)
+        if (b + a == 0) return null
+        val word = before.subSequence(before.length - b, before.length).toString() + after.subSequence(0, a)
+        val (made, case) = TextPolish.nextCase(word, locale) ?: return null
+        ic.setSelection(selStart - b, selStart + a)
+        editor.replaceSelection(Kind.CORRECTION) { made to a }
+        // The cursor is back where it was, and stays the person's: the next tap steps on.
+        ownEditAt = 0L
+        cursorPlaced = true
+        return case
+    }
+
+    /** A lone i (i'm, i'll, i've, i'd) just before the cursor made I, as a word ends, where autocorrect left it. */
+    private fun capitalIBefore(ic: android.view.inputmethod.InputConnection) {
+        if (!prefs.capitalI || !fixableField() || !autocorrect.capitalisesI()) return
+        val before = ic.getTextBeforeCursor(8, 0) ?: return
+        val (old, new) = TextPolish.capitalI(before) ?: return
+        editor.replaceBefore(old, new, Kind.CORRECTION)
+    }
+
     override fun onText(text: String, caretBack: Int) {
+        val ic = currentInputConnection
+        // A mark, or a closing bracket, straight after the space the last mark brought: it takes the space's place.
+        val back = punctSpaced && ic != null && caretBack == 0 && TextPolish.takesSpaceBack(text) && ic.getTextBeforeCursor(1, 0)?.toString() == " "
+        punctSpaced = false
+        if (back) editor.deleteBefore(" ")
+        typeText(text, caretBack)
+        ownEdit()
+        if (ic == null || caretBack != 0 || !prefs.punctSpace || !fixableField() || gifMode == GifMode.TYPING || emojiMode == GifMode.TYPING) return
+        val before = ic.getTextBeforeCursor(2, 0)?.toString() ?: return
+        if (before.length == 2 && before.substring(1) == text && TextPolish.wantsSpace(before.substring(0, 1), text, ic.getTextAfterCursor(1, 0) ?: "")) {
+            editor.type(" ")
+            punctSpaced = true
+        }
+    }
+
+    private fun typeText(text: String, caretBack: Int) {
         toolsHeld = false
         finishTyping()
         val jamo = text.singleOrNull()?.takeIf { caretBack == 0 && language.spec.script == Script.HANGUL && Hangul.isJamo(it) }
@@ -895,6 +967,7 @@ class DevKeyboardService : InputMethodService(), KeyboardListener, Dictation.Lis
         }
         // Punctuation ends a word, as space does: autocorrect it first.
         if (caretBack == 0 && text.length == 1 && isWordEnd(text[0]) && correctLastWord(ic, text)) { endWord(); return }
+        if (caretBack == 0 && text.length == 1 && isWordEnd(text[0])) capitalIBefore(ic)
         lastCorrection = null
         // A closing bracket or quote in front of the same one (a pair typed earlier) steps over it, as an editor does.
         if (caretBack == 0 && text.length == 1 && text[0] in CLOSERS && ic.getTextAfterCursor(1, 0)?.toString() == text) {
@@ -945,6 +1018,20 @@ class DevKeyboardService : InputMethodService(), KeyboardListener, Dictation.Lis
     /** Autocorrect where this field wants it: not passwords, addresses, or fields that ask for no suggestions. */
     private fun autocorrectAllowed(): Boolean {
         if (!Plugins.isOn(prefs, Plugins.AUTOCORRECT)) return false
+        val info = currentInputEditorInfo ?: return false
+        if (info.inputType and InputType.TYPE_MASK_CLASS != InputType.TYPE_CLASS_TEXT) return false
+        if (info.inputType and InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS != 0) return false
+        return when (info.inputType and InputType.TYPE_MASK_VARIATION) {
+            InputType.TYPE_TEXT_VARIATION_URI, InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS,
+            InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS, InputType.TYPE_TEXT_VARIATION_PASSWORD,
+            InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD, InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD,
+            InputType.TYPE_TEXT_VARIATION_FILTER -> false
+            else -> true
+        }
+    }
+
+    /** A field of words, where the keyboard may change what is typed: not a number, an address, a password or a no-suggestions field. */
+    private fun fixableField(): Boolean {
         val info = currentInputEditorInfo ?: return false
         if (info.inputType and InputType.TYPE_MASK_CLASS != InputType.TYPE_CLASS_TEXT) return false
         if (info.inputType and InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS != 0) return false
@@ -1457,6 +1544,7 @@ class DevKeyboardService : InputMethodService(), KeyboardListener, Dictation.Lis
     }
 
     override fun onDelete() {
+        ownEdit()
         toolsHeld = false
         said = null
         finishTyping()
@@ -1534,6 +1622,10 @@ class DevKeyboardService : InputMethodService(), KeyboardListener, Dictation.Lis
     }
 
     override fun onSpace() {
+        // The space a mark already brought: this one is it.
+        val spaced = punctSpaced && currentInputConnection?.getTextBeforeCursor(1, 0)?.toString() == " "
+        ownEdit()
+        if (spaced) { lastSpaceAt = 0L; return }
         toolsHeld = false
         said = null
         finishTyping()
@@ -1581,11 +1673,13 @@ class DevKeyboardService : InputMethodService(), KeyboardListener, Dictation.Lis
         if (kept != null && keptShortcut == null) { lastCorrection = null; editor.type(" "); lastSpaceAt = now; return }
         if (correctLastWord(ic, " ")) { lastSpaceAt = now; return }
         lastCorrection = null
+        capitalIBefore(ic)
         editor.type(" ")
         lastSpaceAt = now
     }
 
     override fun onEnter() {
+        ownEdit()
         toolsHeld = false
         said = null
         finishTyping()
@@ -1704,6 +1798,7 @@ class DevKeyboardService : InputMethodService(), KeyboardListener, Dictation.Lis
 
     /** Cursor control: a slide left from backspace takes the word before the cursor (or the selection). */
     override fun onDeleteWord() {
+        ownEdit()
         toolsHeld = false
         finishTyping()
         wordTouches.clear(); takenTouch = null; lastCorrection = null; lastSwipe = null; cut = null; behind = null
@@ -3684,6 +3779,12 @@ class DevKeyboardService : InputMethodService(), KeyboardListener, Dictation.Lis
     }
 
     companion object {
+        /** TextPolish's shift recasing: the most selected text it recases, and how far either side it reads for the word. */
+        private const val SHIFT_CASE_MOST = 2000
+        private const val SHIFT_CASE_WORD = 64
+        /** A selection report this soon after the keys typed is taken as their own, not the cursor put somewhere. */
+        private const val OWN_EDIT_MS = 500L
+
         /** Punctuation that finishes a word on every layout, and so runs autocorrect on it before it is typed ([isWordEnd] adds the layout's own). */
         private const val WORD_ENDS = ".,!?"
 

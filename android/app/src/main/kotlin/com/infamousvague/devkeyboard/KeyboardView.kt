@@ -38,6 +38,11 @@ interface KeyboardListener {
     fun onMic()
     /** The emoji key, where the { } key was, was tapped. */
     fun onEmoji() {}
+    /**
+     * Shift was tapped: where the host recased the text at the cursor instead (TextPolish), the step it took, which
+     * shift then shows (Title: on, ALL CAPS: locked, lower: off). Null: shift does what it always did.
+     */
+    fun onShiftCase(): TextPolish.Case? = null
     /** Another page of keys is showing (letters, ?123, the code keys): the row's { } button says which. */
     fun onPage() {}
     /** Swipe typing: the finger's [path] over the letters, each letter's key centre, and a key's width. */
@@ -72,6 +77,8 @@ class SafeListener(private val inner: KeyboardListener) : KeyboardListener {
     override fun onHideKeyboard() = guard("onHideKeyboard") { inner.onHideKeyboard() }
     override fun onMic() = guard("onMic") { inner.onMic() }
     override fun onEmoji() = guard("onEmoji") { inner.onEmoji() }
+    override fun onShiftCase(): TextPolish.Case? =
+        try { inner.onShiftCase() } catch (t: Throwable) { android.util.Log.e("GhostKeyboard", "onShiftCase failed", t); null }
     override fun onPage() = guard("onPage") { inner.onPage() }
     override fun onSwipe(path: List<PointF>, keys: Map<Char, PointF>, keyWidth: Float) = guard("onSwipe") { inner.onSwipe(path, keys, keyWidth) }
     override fun onDeleteWord() = guard("onDeleteWord") { inner.onDeleteWord() }
@@ -1829,6 +1836,15 @@ class KeyboardView(context: Context, host: KeyboardListener, private val embedde
 
     private fun tapShift() {
         val now = System.currentTimeMillis()
+        // The text at the cursor recased (Settings › Typing › Shift changes a word's capitals): shift shows the step.
+        listener.onShiftCase()?.let { case ->
+            shift = when (case) { TextPolish.Case.TITLE -> ShiftState.ON; TextPolish.Case.UPPER -> ShiftState.LOCKED; TextPolish.Case.LOWER -> ShiftState.OFF }
+            autoShifted = false
+            lastShiftTap = 0L
+            listener.onShiftChanged()
+            invalidate()
+            return
+        }
         shift = when (shift) {
             ShiftState.OFF -> ShiftState.ON
             // Gboard: a second tap soon after the first locks caps.

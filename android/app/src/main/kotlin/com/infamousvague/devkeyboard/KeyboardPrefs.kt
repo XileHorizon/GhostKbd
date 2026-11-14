@@ -37,6 +37,10 @@ class KeyboardPrefs(context: Context) {
      * setting users can toggle on").
      */
     val commaKey: Boolean get() = bool(COMMA_KEY)
+    /** Settings › Typing (TextPolish.kt): shift recases the word at the cursor; a lone i made I; a space after , . ! ? ; : */
+    val shiftCase: Boolean get() = bool(SHIFT_CASE)
+    val capitalI: Boolean get() = bool(CAPITAL_I)
+    val punctSpace: Boolean get() = bool(PUNCT_SPACE)
     /** Autocorrect changes words on its own; off, it only suggests. */
     val autocorrect: Boolean get() = bool(AUTOCORRECT)
     val suggestions: Boolean get() = bool(SUGGESTIONS)
@@ -352,6 +356,9 @@ class KeyboardPrefs(context: Context) {
         const val TOOLBAR = "toolbar"
         const val HIDE_ROW = "hide_row"
         const val COMMA_KEY = "comma_key"
+        const val SHIFT_CASE = "shift_case"
+        const val CAPITAL_I = "capital_i"
+        const val PUNCT_SPACE = "punct_space"
         const val HAPTICS = "haptics"
         const val AUTOCORRECT = "autocorrect"
         const val LANGUAGES = "languages"
@@ -449,6 +456,9 @@ class KeyboardPrefs(context: Context) {
             TOOLBAR to false,
             HIDE_ROW to false,
             COMMA_KEY to false,
+            SHIFT_CASE to true,
+            CAPITAL_I to true,
+            PUNCT_SPACE to false,
             HAPTICS to "medium",
             AUTOCORRECT to true,
             LANGUAGES to "en",

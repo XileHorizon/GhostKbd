@@ -2041,6 +2041,9 @@ class Autocorrect(private val open: (String) -> InputStream?) {
      * words (Polish and Catalan "and", Swedish and Danish "in", Italian "the"), and the board's capitals are not
      * Turkish's, where I is the capital of ı.
      */
+    /** Whether a lone "i" is English's I on the languages loaded now (TextPolish's Capital I asks, autocorrect or not). */
+    fun capitalisesI(): Boolean = capitalises(now)
+
     private fun capitalises(now: Now): Boolean = now.board.english && !now.lexicon.sharedI && now.board.locale.language != "tr"
 
     /** I, I'm, I've, I'll, I'd: English capitalises them wherever they fall, so only with English loaded; the lone "i" only where [capitalises]. */
