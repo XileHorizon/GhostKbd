@@ -514,7 +514,6 @@ class DevKeyboardService : InputMethodService(), KeyboardListener, Dictation.Lis
 
     override fun onStartInput(attribute: EditorInfo?, restarting: Boolean) {
         super.onStartInput(attribute, restarting)
-        cursorPlaced = false
         punctSpaced = false
         // Another field starts with nothing known about it; the same field started again keeps what it has shown of
         // itself (whether its app reports the cursor, whether a reading of it was ever not as guessed).
@@ -639,9 +638,9 @@ class DevKeyboardService : InputMethodService(), KeyboardListener, Dictation.Lis
         // A tap in the text (not the keyboard's own doing) lets the row go back to that word's suggestions.
         // Nor is the word before read again behind the cursor (lookAgain) once the cursor has moved that way.
         if (editor.onSelection(newSelStart, newSelEnd)) { toolsHeld = false; behind = null }
-        // Not the echo of the keys' own typing: the person put the cursor here (a tap, a slide), and shift may recase
-        // the word there; the space a mark brought is no longer the keyboard's to take back.
-        if (android.os.SystemClock.uptimeMillis() - ownEditAt > OWN_EDIT_MS) { cursorPlaced = true; punctSpaced = false }
+        // Not the echo of the keys' own typing: the person moved the cursor, and the space a mark brought is no longer
+        // the keyboard's to take back.
+        if (android.os.SystemClock.uptimeMillis() - ownEditAt > OWN_EDIT_MS) punctSpaced = false
         selStart = newSelStart
         selEnd = newSelEnd
         // The space a row tap typed is the keyboard's to take back only while the cursor stays just after it.
@@ -862,42 +861,65 @@ class DevKeyboardService : InputMethodService(), KeyboardListener, Dictation.Lis
     /** The space a mark brought with it ([TextPolish.wantsSpace]), still just before the cursor: a space or another mark takes it back. */
     private var punctSpaced = false
 
-    /** The cursor was put where it is by a tap in the text or a slide, not by typing: shift may recase the word there. */
-    private var cursorPlaced = false
-
-    /** When the keys last typed or deleted ([cursorPlaced] reads selection reports this close after as the keys' own). */
+    /** When the keys last typed or deleted (a selection report this close after is their own, not the cursor moved). */
     private var ownEditAt = 0L
 
-    private fun ownEdit() { ownEditAt = android.os.SystemClock.uptimeMillis(); cursorPlaced = false; punctSpaced = false }
+    private fun ownEdit() { ownEditAt = android.os.SystemClock.uptimeMillis(); punctSpaced = false }
 
     override fun onShiftCase(): TextPolish.Case? {
-        if (!prefs.shiftCase || !fixableField()) return null
+        if (!prefs.shiftCase || !recasable()) return null
         val ic = currentInputConnection ?: return null
+        finishTyping()
         val locale = language.spec.locale
-        val selected = ic.getSelectedText(0)?.toString()
+        // Where the cursor is in the whole field: asked of the app now, as the last report may not have come yet.
+        val extracted = runCatching { ic.getExtractedText(android.view.inputmethod.ExtractedTextRequest(), 0) }.getOrNull()
+        val start = extracted?.let { it.startOffset + minOf(it.selectionStart, it.selectionEnd) }?.takeIf { it >= 0 } ?: minOf(selStart, selEnd)
+        val end = extracted?.let { it.startOffset + maxOf(it.selectionStart, it.selectionEnd) }?.takeIf { it >= 0 } ?: maxOf(selStart, selEnd)
+        if (start < 0) return null
+        val selected = if (end > start) ic.getSelectedText(0)?.toString() else null
         if (!selected.isNullOrEmpty()) {
             if (selected.length > SHIFT_CASE_MOST) return null
             val (made, case) = TextPolish.nextCase(selected, locale) ?: return null
-            val start = minOf(selStart, selEnd)
-            editor.replaceSelection(Kind.CORRECTION) { made to 0 }
+            ic.beginBatchEdit()
+            ic.commitText(made, 1)
             // Still selected, for the next tap.
-            if (start >= 0) ic.setSelection(start, start + made.length)
-            ownEdit()
+            ic.setSelection(start, start + made.length)
+            ic.endBatchEdit()
+            editor.sent()
+            ownEditAt = 0L
+            scheduleRow()
             return case
         }
-        if (!cursorPlaced || selStart < 0) return null
         val before = ic.getTextBeforeCursor(SHIFT_CASE_WORD, 0) ?: return null
         val after = ic.getTextAfterCursor(SHIFT_CASE_WORD, 0) ?: ""
         val (b, a) = TextPolish.wordAround(before, after)
         if (b + a == 0) return null
         val word = before.subSequence(before.length - b, before.length).toString() + after.subSequence(0, a)
         val (made, case) = TextPolish.nextCase(word, locale) ?: return null
-        ic.setSelection(selStart - b, selStart + a)
-        editor.replaceSelection(Kind.CORRECTION) { made to a }
-        // The cursor is back where it was, and stays the person's: the next tap steps on.
+        ic.beginBatchEdit()
+        ic.finishComposingText()
+        ic.deleteSurroundingText(b, a)
+        ic.commitText(made, 1)
+        // The cursor back where it was in the word.
+        val at = start - b + (made.length - a).coerceAtLeast(0)
+        ic.setSelection(at, at)
+        ic.endBatchEdit()
+        editor.sent()
+        // The row's words for the word as it now is; and autocorrect leaves the capitals chosen alone at its end.
+        lastCorrection = null
         ownEditAt = 0L
-        cursorPlaced = true
+        scheduleRow()
         return case
+    }
+
+    /** Any field but a password's: shift's recasing changes only capitals, so it is welcome even where suggestions are not. */
+    private fun recasable(): Boolean {
+        val info = currentInputEditorInfo ?: return false
+        if (info.inputType and InputType.TYPE_MASK_CLASS != InputType.TYPE_CLASS_TEXT) return false
+        return when (info.inputType and InputType.TYPE_MASK_VARIATION) {
+            InputType.TYPE_TEXT_VARIATION_PASSWORD, InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD, InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD -> false
+            else -> true
+        }
     }
 
     /** A lone i (i'm, i'll, i've, i'd) just before the cursor made I, as a word ends, where autocorrect left it. */

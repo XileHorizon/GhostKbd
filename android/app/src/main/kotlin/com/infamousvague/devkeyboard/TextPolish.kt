@@ -5,7 +5,8 @@ import java.util.Locale
 /**
  * Three small typing helps (Kevin, 2026-11-14), each a switch in Settings › Typing:
  *
- * - **Shift changes a word's capitals** (`shift_case`): with text selected, or the cursor put down in or against a word,
+ * - **Shift changes a word's capitals** (`shift_case`): with text selected, or the cursor in or against a word (one
+ *   just typed too, as SwiftKey has it),
  *   a tap on shift steps that text through Title, ALL CAPS and lower, as SwiftKey does ("one level it capitalizes the
  *   first letter, next the full word and then if you hit it again it goes to all lower on shift off"). [nextCase],
  *   [wordAround].
